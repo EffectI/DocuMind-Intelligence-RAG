@@ -1,0 +1,14 @@
+langchain
+langchain-community
+langchain-huggingface
+chromadb
+sentence-transformers
+opendartreader
+pymupdf
+pandas
+python-dotenv
+beautifulsoup4
+lxml
+matplotlib
+seaborn
+wordcloud
