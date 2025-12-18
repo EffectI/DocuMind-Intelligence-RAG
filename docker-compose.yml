@@ -1,0 +1,29 @@
+services:
+  documind:
+    build: .
+    container_name: documind_rag
+    
+    # [핵심] AMD GPU 패스스루 (호스트의 GPU를 컨테이너가 쓰게 함)
+    devices:
+      - "/dev/kfd"
+      - "/dev/dri"
+    security_opt:
+      - seccomp=unconfined
+    group_add:
+      - video
+    
+    # [연결] 내 컴퓨터의 폴더를 컨테이너와 동기화
+    volumes:
+      - ./data:/app/data  # 수집한 데이터 보존
+      - ./src:/app/src    # 코드 수정하면 즉시 반영
+      - ./notebooks:/app/notebooks
+      - ./.env:/app/.env  # API 키 파일 연결
+      
+    # 환경 변수 설정
+    environment:
+      - HSA_OVERRIDE_GFX_VERSION=11.0.0 # (GPU 인식 안 될 경우 주석 해제하여 사용)
+      - DART_API_KEY=${DART_API_KEY}
+      
+    # 컨테이너 실행 시 자동 재시작 방지 및 유지
+    tty: true
+    stdin_open: true
