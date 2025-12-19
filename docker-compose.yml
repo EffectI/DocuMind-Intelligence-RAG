@@ -3,10 +3,10 @@ services:
     build: .
     container_name: documind_rag
     
-    # [핵심] AMD GPU 패스스루 (호스트의 GPU를 컨테이너가 쓰게 함)
     devices:
-      - "/dev/kfd"
-      - "/dev/dri"
+      - /dev/dxg:/dev/dxg
+      #- "/dev/kfd"
+      #- "/dev/dri"
     security_opt:
       - seccomp=unconfined
     group_add:
@@ -21,7 +21,7 @@ services:
       
     # 환경 변수 설정
     environment:
-      - HSA_OVERRIDE_GFX_VERSION=11.0.0 # (GPU 인식 안 될 경우 주석 해제하여 사용)
+      #- HSA_OVERRIDE_GFX_VERSION=11.0.0 # (GPU 인식 안 될 경우 주석 해제하여 사용)
       - DART_API_KEY=${DART_API_KEY}
       
     # 컨테이너 실행 시 자동 재시작 방지 및 유지
