@@ -5,4 +5,6 @@ sudo service docker start
 
 sudo service docker status
 
+unset HSA_OVERRIDE_GFX_VERSION
+
 ```

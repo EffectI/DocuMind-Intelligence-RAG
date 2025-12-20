@@ -57,7 +57,11 @@ ScienceOn (KISTI): 국내외 과학기술 학술정보, 논문, 보고서를 통
 1. 임베딩 모델 (Embedding Model: 데이터 벡터화)
 성능 최우선 (API형): OpenAI text-embedding-3-large
 한국어 특화 (API형): Upstage solar-embedding-1-v2
-오픈소스 (로컬 구축형): BAAI/bge-m3 또는 intfloat/multilingual-e5-large
+오픈소스 (로컬 구축형): BAAI/bge-m3 또는 intfloat/multilingual-e5-large 
+
+References: https://arxiv.org/pdf/2402.03216
+
+
 
 
 2. 리랭커 모델 (Reranker Model: 검색 결과 재정렬)

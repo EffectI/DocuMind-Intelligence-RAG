@@ -6,12 +6,18 @@ __pycache__/
 # Environment Variables
 .env
 
-# Data
-data/raw/
-data/processed/
+# Data & vector DB
+data/
+vector_db/
+*.sqlite3
+*.bin
+huggingface/
+.cache/
+
 
 # OS
 .DS_Store
 
 # Cache files
 docs_cache/
+
