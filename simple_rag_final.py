@@ -78,7 +78,7 @@ def main():
 
         # 검색된 문서 내용 로그 출력
         print("\n" + "="*60)
-        print(f"🔍 [DEBUG] Retriever가 찾아온 문서 ({len(docs)}개)")
+        print(f"[DEBUG] Retriever가 찾아온 문서 ({len(docs)}개)")
         print("="*60)
         for i, doc in enumerate(docs):
             source = doc.metadata.get('source', 'Unknown Source')
