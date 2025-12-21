@@ -1,13 +1,11 @@
 import os
 import torch
 from threading import Thread
+from collections import deque
 
-# 1. 랭체인 필수 요소
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_core.prompts import PromptTemplate
 
-# 2. 허깅페이스 모델 & 토크나이저 & 설정
 from transformers import (
     AutoTokenizer, 
     AutoModelForCausalLM, 
@@ -27,7 +25,7 @@ EMBEDDING_MODEL = "BAAI/bge-m3"
 def main():
     # 1. GPU 설정
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"========== [1] 시스템 점검 ({device}) ==========")
+    print(f"[1] System Check: {device}")
     
     # 2. 임베딩 모델 로드
     print("Loading Embeddings...")
@@ -38,7 +36,7 @@ def main():
 
     # 3. 벡터 DB 로드
     if not os.path.exists(DB_PATH):
-        print("DB가 없습니다. simple_rag.py를 먼저 실행하세요.")
+        print("Error: DB Not Found. Run simple_rag.py first.")
         return
 
     vector_store = Chroma(
@@ -46,11 +44,10 @@ def main():
         embedding_function=embeddings,
         collection_name="samsung_report_db"
     )
-    # 검색기 생성 (유사도 높은 3개 문서 추출)
     retriever = vector_store.as_retriever(search_kwargs={"k": 3})
 
     # 4. LLM 로드
-    print(f"Loading LLM ({LLM_MODEL_ID}) with 4-bit Quantization...")
+    print(f"Loading LLM ({LLM_MODEL_ID})...")
     
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
@@ -65,83 +62,126 @@ def main():
         device_map="auto",
     )
 
-    # 5. 프롬프트 템플릿 설정
-    template = """당신은 삼성전자 사업보고서를 분석하는 AI 비서입니다.
-아래의 [참고 문서]를 바탕으로 질문에 대해 명확하고 간결하게 답변하세요.
-만약 문서에 없는 내용이라면 "문서에 해당 내용이 없습니다"라고 말하세요.
-
-[참고 문서]
-{context}
-
-질문: {question}
-답변:"""
-    prompt = PromptTemplate.from_template(template)
+    # =========================================================
+    # 대화 기록 저장소
+    # =========================================================
+    chat_history = deque(maxlen=5) 
 
     # =========================================================
-    # 스트리밍 함수 구현
+    # 스트리밍 함수
     # =========================================================
-    def stream_response(query):
-        print(f"\n질문: {query}")
-        print("AI 답변: ", end="", flush=True)
-
+    def stream_response(query, history):
+        print(f"\nQuestion: {query}")
+        
         # 1. 문서 검색
         docs = retriever.invoke(query)
+
+        # 검색된 문서 내용 로그 출력
+        print("\n" + "="*60)
+        print(f"🔍 [DEBUG] Retriever가 찾아온 문서 ({len(docs)}개)")
+        print("="*60)
+        for i, doc in enumerate(docs):
+            source = doc.metadata.get('source', 'Unknown Source')
+            page = doc.metadata.get('page', 'Unknown Page')
+            content = doc.page_content.strip()
+            
+            print(f"[Chunk {i+1}] (Source: {source}, Page: {page})")
+            print("-" * 30)
+            print(content) # 문서 내용 전체 출력
+            print("-" * 60)
+        print("============================================================\n")
+
         context_text = "\n\n".join([d.page_content for d in docs])
         
-        # 2. 프롬프트 완성
-        final_prompt = prompt.format(context=context_text, question=query)
+        print("AI Answer: ", end="", flush=True)
+
+        # [시스템 프롬프트 유지]
+        system_prompt = (
+            "당신은 삼성전자 사업보고서를 분석하는 AI 비서입니다. "
+            "제공된 [참고 문서]를 바탕으로 질문에 대해 핵심만 간결하게 답변하세요. "
+            "답변이 끝나면 불필요한 부연 설명이나 단위 변환 목록(예: 1GB=...)을 절대 작성하지 말고 즉시 대화를 종료하세요."
+        )
+
+        # 2. 메시지 구조 생성
+        messages = [{"role": "system", "content": system_prompt}]
+
+        for old_query, old_answer in history:
+            messages.append({"role": "user", "content": old_query})
+            messages.append({"role": "assistant", "content": old_answer})
+
+        messages.append({
+            "role": "user", 
+            "content": f"[참고 문서]\n{context_text}\n\n질문: {query}"
+        })
         
         # 3. 토큰화
-        inputs = tokenizer(final_prompt, return_tensors="pt").to(model.device)
+        input_ids = tokenizer.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            return_tensors="pt"
+        ).to(model.device)
 
         # 4. 스트리머 준비
+        
         streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
         
-        # Llama-3 전용 종료 신호(Terminators) 설정
+        # [종료 토큰 설정 유지]
         terminators = [
             tokenizer.eos_token_id,
-            tokenizer.convert_tokens_to_ids("<|eot_id|>")
+            tokenizer.convert_tokens_to_ids("<|eot_id|>"),
+            tokenizer.convert_tokens_to_ids("<|end_of_text|>")
         ]
 
         # 5. 생성 시작
         generation_kwargs = dict(
-            inputs, 
+            input_ids=input_ids, 
             streamer=streamer, 
             max_new_tokens=512, 
-            temperature=0.1,
-            repetition_penalty=1.1,
+            temperature=0.09,        
+            repetition_penalty=1.15, 
             do_sample=True,        
             eos_token_id=terminators 
         )
         thread = Thread(target=model.generate, kwargs=generation_kwargs)
         thread.start()
 
-        # 6. 실시간 출력
+        # 6. 실시간 출력 및 텍스트 수집
         generated_text = ""
+        
+        stop_keywords = ["질문:", "User:", "Question:", "사용자:", "<|eot_id|>", "<|end_of_text|>"]
+
         for new_text in streamer:
+            should_stop = False
+            for keyword in stop_keywords:
+                if keyword in new_text:
+                    should_stop = True
+                    break
+            
+            if should_stop:
+                break
+
             print(new_text, end="", flush=True)
             generated_text += new_text
+            
         print("\n")
         return generated_text
 
-# 7. 대화형 인터페이스 실행
-    print("\n========== [2] RAG 챗봇 시작 (종료하려면 'q' 입력) ==========")
+    # 7. 대화형 인터페이스 실행
+    print("\n[2] RAG Chatbot Started (Type 'q' to exit)")
     
     while True:
-        # 사용자 입력 받기
-        query = input("\n질문 입력: ")
-        
-        # 종료 조건
-        if query.lower() in ['q', 'quit', 'exit', '종료']:
-            print("챗봇을 종료합니다.")
+        try:
+            query = input("\nInput: ")
+            if query.lower() in ['q', 'quit', 'exit']:
+                break
+            if not query.strip():
+                continue
+                
+            response_text = stream_response(query, chat_history)
+            chat_history.append((query, response_text))
+            
+        except KeyboardInterrupt:
             break
-            
-        # 빈 입력 방지
-        if not query.strip():
-            continue
-            
-        # 답변 생성
-        stream_response(query)
 
 if __name__ == "__main__":
     main()
