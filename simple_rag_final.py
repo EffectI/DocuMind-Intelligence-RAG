@@ -84,7 +84,7 @@ def main():
         print(f"\n질문: {query}")
         print("AI 답변: ", end="", flush=True)
 
-        # 1. 문서 검색 (Retrieval)
+        # 1. 문서 검색
         docs = retriever.invoke(query)
         context_text = "\n\n".join([d.page_content for d in docs])
         
@@ -97,13 +97,21 @@ def main():
         # 4. 스트리머 준비
         streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
         
+        # Llama-3 전용 종료 신호(Terminators) 설정
+        terminators = [
+            tokenizer.eos_token_id,
+            tokenizer.convert_tokens_to_ids("<|eot_id|>")
+        ]
+
         # 5. 생성 시작
         generation_kwargs = dict(
             inputs, 
             streamer=streamer, 
             max_new_tokens=512, 
             temperature=0.1,
-            repetition_penalty=1.1
+            repetition_penalty=1.1,
+            do_sample=True,        
+            eos_token_id=terminators 
         )
         thread = Thread(target=model.generate, kwargs=generation_kwargs)
         thread.start()
@@ -116,10 +124,24 @@ def main():
         print("\n")
         return generated_text
 
-    # 7. 실행
-    print("\n========== [2] RAG 파이프라인 가동 (Streaming) ==========")
-    query = "삼성전자의 DX 부문 주요 제품은 무엇인가요?"
-    stream_response(query)
+# 7. 대화형 인터페이스 실행
+    print("\n========== [2] RAG 챗봇 시작 (종료하려면 'q' 입력) ==========")
+    
+    while True:
+        # 사용자 입력 받기
+        query = input("\n질문 입력: ")
+        
+        # 종료 조건
+        if query.lower() in ['q', 'quit', 'exit', '종료']:
+            print("챗봇을 종료합니다.")
+            break
+            
+        # 빈 입력 방지
+        if not query.strip():
+            continue
+            
+        # 답변 생성
+        stream_response(query)
 
 if __name__ == "__main__":
     main()
