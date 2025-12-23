@@ -1,18 +1,29 @@
+# RAG Framework & LangChain
 langchain
 langchain-community
 langchain-huggingface
 langchain-chroma
 langchain-text-splitters
 chromadb
+
+# LLM & Embedding
 sentence-transformers
+openai
+
+# Data Processing & Parsing
+pandas
 opendartreader
 pymupdf
-pandas
-python-dotenv
+pdfplumber
 beautifulsoup4
 lxml
+python-dotenv
+
+# Visualization
 matplotlib
 seaborn
 wordcloud
-pdfplumber
-sentence-transformers
+
+# Evaluation
+ragas
+datasets

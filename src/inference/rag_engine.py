@@ -20,7 +20,7 @@ from config import (
     DB_PATH, 
     LLM_MODEL_ID, 
     EMBEDDING_MODEL_ID, 
-    RERANKER_MODEL_ID, # [New] config에서 가져오기
+    RERANKER_MODEL_ID, 
     DEVICE, 
     MAX_NEW_TOKENS, 
     TEMPERATURE
@@ -28,7 +28,6 @@ from config import (
 
 class RAGEngine:
     def __init__(self):
-        # Config의 DEVICE 사용
         self.device = DEVICE
         print(f"[Init] Device: {self.device}")
         
