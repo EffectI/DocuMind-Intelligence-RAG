@@ -6,6 +6,66 @@
 본 프로젝트는 기업용 보고서 데이터셋에서 사용자의 질문에 관련된 정보를 정확하게 추출하고, 
 이를 바탕으로 답변을 생성하는 RAG(Retrieval-Augmented Generation) 시스템 구축을 목표로 함.
 
+
+## Architecture & Features
+
+본 프로젝트는 기업 보고서(PDF, XML) 분석에 최적화된 **On-Premise RAG 파이프라인**으로 구축되었습니다.
+
+### Retrieval & Ranking
+- **Dense Vector Search:** 의미 기반 검색(Semantic Search)을 위해 고차원 벡터 임베딩을 사용합니다. 단순 키워드 매칭을 넘어 문맥적 유사도가 높은 문서를 추출합니다.
+- **Similarity-Based Ranking:** Cosine Similarity(코사인 유사도) 스코어를 기준으로 가장 연관성 높은 Top-k 문서를 선별하여 LLM에 전달합니다.
+- **ChromaDB Integration:** 로컬 벡터 저장소인 ChromaDB를 활용하여 빠르고 영구적인 데이터 인덱싱을 지원합니다.
+
+### Inference Engine
+- **Local LLM Pipeline:** HuggingFace `transformers` 파이프라인을 기반으로 구축되었습니다.
+- **Efficient Quantization:** `BitsAndBytes`를 활용한 4-bit 양자화(Quantization)를 적용하여, 제한된 GPU 메모리 환경에서도 Llama 3 등 고성능 모델 구동이 가능합니다.
+- **Streaming Response:** `TextIteratorStreamer`를 적용하여 대기 시간 없이 실시간으로 답변이 생성되는 과정을 시각화합니다.
+
+### Data Ingestion & Parsing
+- **Custom PDF Parser:** `pdfplumber`를 기반으로 자체 개발한 파서가 적용되었습니다. 단순 텍스트뿐만 아니라 보고서 내 **표(Table)** 데이터를 Markdown 형식으로 변환하여 LLM의 해독력을 높였습니다.
+- **Metadata-Aware Chunking:** 페이지 번호, 섹션 헤더 등 메타데이터를 보존하며 문서를 청킹(Chunking)하여, 답변 시 정확한 출처(Source)를 표기합니다.
+- **Direct Query Processing:** 사용자의 자연어 질의(Raw Query)를 전처리 없이 즉각적으로 검색 엔진에 투입하여 Latency를 최소화합니다.
+
+
+## Technical Pipeline
+
+**DocuMind AI**는 다음과 같은 순서로 동작함.
+
+| Stage | Technology | Description |
+| :--- | :--- | :--- |
+| **1. Ingestion** | `pdfplumber`, Custom Logic | PDF/XML 문서의 텍스트 및 표 구조 추출, Markdown 변환 |
+| **2. Embedding** | HuggingFace Embeddings | 문서를 Dense Vector로 변환하여 의미론적 인덱싱 수행 |
+| **3. Storage** | `ChromaDB` | 벡터 데이터 및 메타데이터(출처, 페이지) 영구 저장 |
+| **4. Retrieval** | Vector Similarity Search | 사용자 질문과 가장 유사한 문맥을 Cosine Similarity로 검색 |
+| **5. Inference** | `Transformers`, `BnB` (4-bit) | 검색된 문맥을 바탕으로 Local LLM(Llama 3)이 답변 생성 |
+| **6. UI** | `Streamlit` | 대화형 인터페이스 및 실시간 스트리밍 답변 제공 |
+
+
+
+
+
+## Roadmap
+
+### Phase 1: MVP (Completed)
+- [x] **Data Pipeline:** DART API 연동 및 PDF 파싱 구현
+- [x] **Basic RAG:** ChromaDB + Dense Retrieval 구현
+- [x] **UI:** Streamlit 기반 대화형 인터페이스 구축
+
+### Phase 2: Accuracy & Retrieval (Current Focus)
+- [ ] **Advanced Search:** Hybrid Search (BM25 + Vector) 도입
+- [x] **Reranking:** Cross-Encoder 기반 검색 결과 재순위화(Re-ranking) 적용 
+- [ ] **Evaluation:** Ragas 프레임워크를 활용한 검색 정확도 정량 평가
+
+### Phase 3: Performance & Serving (Planned)
+- [ ] **Inference Engine:** vLLM 도입을 통한 추론 속도 가속
+- [ ] **Deployment:** Docker Container 패키징
+
+
+
+
+
+
+
 ## SWOT 분석
 | 강점 (Strength) | 약점 (Weakness) |
 | :--- | :--- |
@@ -14,54 +74,12 @@
 | 클라우드 보안 규제로 인한 독립적 RAG 수요 증가 | GPT-5 등 상위 모델의 성능 개선으로 인한 기술적 해자 축소 |
 
 
-## 핵심 특징 (Features)
-- **경량화**: 온프레미스(On-premise) 환경에서도 효율적으로 동작하는 SLM 활용
-- **한국어 특화**: 국내 비즈니스 환경 및 전문 용어에 최적화된 자연어 처리
-- **범용성**: 다양한 산업군(금융, 법률, 제조 등)의 보고서 양식 대응
-- **보안성**: 내부 데이터 유출 방지를 위한 독립적 시스템 구성 가능
-
-
-## 데이터 수집 전략
-다음의 소스를 우선적으로 수집함.
-
-1. 공공 및 정책 연구 보고서 (Public & Policy Reports)
-국가정책연구포털 (NKIS): 국책연구단지 내 26개 경제·인문사회 연구기관의 연구 성과물을 통합 제공합니다. 가장 공신력 있는 정책 보고서 수집처임
-알리오 (ALIO) 연구보고서 공시: 370여 개 공공기관에서 작성한 연구보고서 현황을 확인할 수 있음
-NTIS (국가과학기술지식정보서비스): 국가 R&D 사업을 통해 산출된 연구보고서와 기술 동향 자료를 수집할 수 있음
-공공데이터포털: 다양한 공공기관의 연구보고서 데이터를 API 형태로 제공
-
-2. 기업 및 산업 분석 보고서 (Corporate & Industry Reports)
-Open DART (전자공시시스템): 상장사들의 사업보고서, 분기보고서 원문을 XML/JSON 형태로 가져올 수 있는 API를 제공합니다. 재무 데이터와 텍스트 데이터가 결합된 형태.
-한경컨센서스: 국내 모든 증권사 애널리스트들이 작성한 기업/산업/시장 분석 리포트를 한데 모아 제공, PDF 파일 수집에 용이함
-한국IR협의회: 상장 기업들의 IR 자료와 기술 분석 보고서를 무료로 배포
-네이버 금융 (리서치): 증권사 리포트를 카테고리별로 모아서 볼 수 있는 대중적인 사이트
-
-3. 경제 및 전문 분야 보고서 (Economic & Specialized Reports)
-주요 경제연구소: 삼성경제연구소(SERI), LG경영연구원, 현대경제연구원 등에서 발간하는 트렌드 리포트 존재
-한국콘텐츠진흥원 (콘텐츠산업정보포털): 매년 발간되는 산업 백서와 트렌드 보고서의 품질이 높음
-ScienceOn (KISTI): 국내외 과학기술 학술정보, 논문, 보고서를 통합 검색하고 수집할 수 있는 플랫폼
-
-
-### 1순위 (FIRST PRIORITY)
-- **한경컨센서스**: 국내 증권사 산업/기업 분석 리포트 (PDF 형태)
-- **Open DART**: 상장사 사업보고서 및 재무 데이터 (XML/JSON/Text)
-
-
-
-
-
-
-
 
 
 1. 임베딩 모델 (Embedding Model: 데이터 벡터화)
 성능 최우선 (API형): OpenAI text-embedding-3-large
 한국어 특화 (API형): Upstage solar-embedding-1-v2
 오픈소스 (로컬 구축형): BAAI/bge-m3 또는 intfloat/multilingual-e5-large 
-
-References: https://arxiv.org/pdf/2402.03216
-
-
 
 
 2. 리랭커 모델 (Reranker Model: 검색 결과 재정렬)
