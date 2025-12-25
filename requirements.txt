@@ -4,11 +4,17 @@ langchain-community
 langchain-huggingface
 langchain-chroma
 langchain-text-splitters
+langchain-google-genai
+
+# Vector DB
 chromadb
 
-# LLM & Embedding
+# LLM & Embedding (Local & API)
 sentence-transformers
-openai
+transformers              
+bitsandbytes              
+accelerate                
+torch                     
 
 # Data Processing & Parsing
 pandas
