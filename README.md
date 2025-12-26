@@ -38,39 +38,46 @@
 | **6. Inference** | `Llama-3`, `BnB` (4-bit) | 선별된 문맥을 바탕으로 Local LLM이 답변 생성 |
 | **7. Evaluation** | `Ragas`, `Gemini Pro` | 생성된 답변의 사실성(Faithfulness) 및 정확도 정량 평가 |
 
----
 
-## Roadmap & Status
+
+## 🗺️ Roadmap & Status
 
 ### Phase 1: MVP (Completed) ✅
 - [x] **Data Pipeline:** DART API 연동 및 PDF 파싱 구현
 - [x] **Basic RAG:** ChromaDB + Dense Retrieval 구현
 - [x] **UI:** Streamlit 기반 대화형 인터페이스 구축
 
-### Phase 2: Accuracy & Retrieval (Current Focus)
+### Phase 2: Accuracy & Retrieval (Current Focus) 🚧
 - [x] **Reranking:** Cross-Encoder 기반 검색 결과 재순위화(Re-ranking) 적용 완료
 - [ ] **Advanced Search:** Hybrid Search (BM25 + Vector) 도입 예정
 - [x] **Golden Dataset:** 자동 생성 스크립트(`generate_dataset.py`) 구축 완료
-- [ ] **Evaluation:** Ragas 프레임워크를 활용한 검색 정확도 정량 평가 진행 중 (Tuning)
+- [x] **Evaluation Pipeline:** Ragas + Gemini 기반 정량 평가 시스템 구축 완료 (정확도 최적화 진행 중)
 
-### Phase 3: Performance & Serving (Planned)
+### Phase 3: Performance & Serving (Planned) 📅
 - [ ] **Inference Engine:** vLLM 도입을 통한 추론 속도 가속
 - [ ] **Deployment:** Docker Container 패키징
 
 ---
 
+## 🛠️ Recent Fixes & Optimizations
 
+### 1. Evaluation Stability & Memory Leak Fix (2025.12.25)
+**문제 상황 (Issue):**
+Ragas 평가 시 대량의 데이터(Batch)를 처리할 때, 기존 UI용 스트리밍 함수(`chat`)를 재사용함에 따라 **쓰레드(Thread) 적체** 및 **GPU VRAM 누수**가 발생하여 시스템이 멈추는 현상(Freeze) 확인.
 
+**해결 방안 (Solution):**
+- **Evaluation 전용 메서드 구현:** `RAGEngine` 내에 쓰레드와 스트리머를 사용하지 않는 `generate_answer()` 메서드를 추가하여 오버헤드 제거.
+- **Memory Management:** 매 평가 턴마다 `gc.collect()` 및 `torch.cuda.empty_cache()`를 호출하여 VRAM 파편화 방지.
+- **HuggingFace Warning Fix:** `pad_token_id` 설정 및 `attention_mask` 명시적 전달로 생성 품질 안정화.
 
+**결과 (Result):**
+- 시스템 멈춤 없이 전체 데이터셋에 대한 연속 평가 가능해짐.
 
-## Recent Fixes & Optimizations
+### 2. Ragas Cost & Rate Limit Optimization (2025.12.26)
+**문제 상황 (Issue):**
+평가(Judge) 모델로 Gemini Pro 사용 시, 무료 티어의 **RPM(분당 요청 수) 제한**에 걸려 평가가 중단되거나 무한 대기하는 현상 발생.
 
-### 1. Evaluation Memory Leak Fix (2025.12.25)
-**문제 상황:**
-Ragas 평가 진행 시, 대량의 평가 데이터(Batch Processing)를 처리하는 과정에서 `TextIteratorStreamer` 쓰레드가 적체되어 GPU VRAM 누수 및 시스템 프리징(System Freeze) 현상 발생.
-
-**해결 방안:**
-평가 로직(`src/evaluation.py`)에 메모리 관리 프로세스 도입.
-- **Explicit GC:** 매 평가 턴마다 `gc.collect()` 및 `torch.cuda.empty_cache()` 강제 호출.
-- **Thread Cooldown:** 쓰레드 종료를 보장하기 위해 추론 사이클 간 `time.sleep()` 대기 시간 추가.
-- **Result:** 5회 반복 후 멈추던 현상 해결, 전체 데이터셋 안정적 평가 가능.
+**해결 방안 (Solution):**
+- **Model Switching:** 평가 모델을 속도가 빠르고 제한이 넉넉한 **`gemini-1.5-flash`**로 변경.
+- **Sequential Execution:** `RunConfig(max_workers=1)` 설정을 통해 병렬 처리를 비활성화하고 순차 처리로 변경하여 API 제한 회피.
+- **Metric Initialization:** Ragas v0.2+ 호환성을 위해 메트릭 객체 초기화 방식 수정 (Deprecation Warning 해결).

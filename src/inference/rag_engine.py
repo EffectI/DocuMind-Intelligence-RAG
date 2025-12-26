@@ -31,6 +31,13 @@ class RAGEngine:
         self.device = DEVICE
         print(f"[Init] Device: {self.device}")
         
+        # [안전 장치] 프로세스가 GPU 메모리의 90%까지만 쓰도록 제한 (OS 멈춤 방지)
+        if torch.cuda.is_available():
+            try:
+                torch.cuda.set_per_process_memory_fraction(0.9)
+            except Exception as e:
+                print(f"[Warning] Failed to set memory fraction: {e}")
+        
         self._load_vector_db()
         self._load_reranker() 
         self._load_llm()
@@ -53,13 +60,13 @@ class RAGEngine:
         )
 
     def _load_reranker(self):
-        """[New] Cross-Encoder Reranker 로드"""
+        """Cross-Encoder Reranker 로드"""
         print(f"[Init] Reranker 로딩 ({RERANKER_MODEL_ID})...")
-        # automodel_args를 사용하여 torch_dtype 설정
+        # [수정] DeprecationWarning 해결: automodel_args -> model_kwargs, torch_dtype -> dtype
         self.reranker = CrossEncoder(
             RERANKER_MODEL_ID, 
             device=self.device,
-            automodel_args={"torch_dtype": "auto"}
+            model_kwargs={"dtype": "auto"}
         )
 
     def _load_llm(self):
@@ -70,11 +77,20 @@ class RAGEngine:
             bnb_4bit_compute_dtype=torch.float16
         )
         self.tokenizer = AutoTokenizer.from_pretrained(LLM_MODEL_ID)
+        
+        # [수정] Pad Token Warning 해결
+        # Llama-3는 pad_token이 없으므로 eos_token으로 설정
+        self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
+        self.tokenizer.padding_side = "right" # 생성 시에는 right padding 권장
+
         self.model = AutoModelForCausalLM.from_pretrained(
             LLM_MODEL_ID,
             quantization_config=bnb_config,
             device_map="auto"
         )
+        # 모델 설정에도 pad_token_id 반영
+        self.model.config.pad_token_id = self.tokenizer.eos_token_id
+        
         self.terminators = [
             self.tokenizer.eos_token_id,
             self.tokenizer.convert_tokens_to_ids("<|eot_id|>"),
@@ -83,7 +99,7 @@ class RAGEngine:
 
     def search(self, query: str, filters: Optional[Dict] = None, k: int = 3):
         """
-        [Upgrade] 2단계 검색 시스템
+        2단계 검색 시스템
         1. Vector Search로 후보군(3배수) 추출
         2. Cross-Encoder로 정밀 채점(Reranking) 후 Top-k 반환
         """
@@ -108,13 +124,13 @@ class RAGEngine:
         # (질문, 문서내용) 쌍을 생성
         pairs = [[query, doc.page_content] for doc in docs]
         
-        # CrossEncoder가 문맥 연관성 점수 계산 (높을수록 좋음)
+        # CrossEncoder가 문맥 연관성 점수 계산
         scores = self.reranker.predict(pairs)
 
         # 3. 점수와 문서 결합 및 정렬
         scored_docs = []
         for doc, score in zip(docs, scores):
-            doc.metadata["rerank_score"] = float(score) # 메타데이터에 점수 기록 (디버깅용)
+            doc.metadata["rerank_score"] = float(score)
             scored_docs.append(doc)
 
         # 점수 내림차순 정렬
@@ -123,16 +139,12 @@ class RAGEngine:
         # 상위 k개만 선택
         final_docs = scored_docs[:k]
         
-        # (옵션) 로그 출력
-        if final_docs:
-            print(f"[Search] Top score: {final_docs[0].metadata['rerank_score']:.4f}")
-
         return final_docs
 
     def chat(self, query: str, filters: Optional[Dict] = None):
-        """Generator 방식으로 UI에 스트리밍"""
+        """Generator 방식으로 UI에 스트리밍 (Thread 사용)"""
         
-        # 1. Retrieve (Reranker가 적용된 search 호출)
+        # 1. Retrieve
         docs = self.search(query, filters, k=3)
         
         context_parts = []
@@ -140,12 +152,10 @@ class RAGEngine:
         for doc in docs:
             meta = doc.metadata
             src = f"{meta.get('company', 'Unknown')} {meta.get('year', '')}"
-            page = meta.get('page', '?') # 페이지 정보가 있다면 표시
+            page = meta.get('page', '?')
             
-            # 컨텍스트 조립
             context_parts.append(f"[{src} p.{page}]\n{doc.page_content.strip()}")
             
-            # 출처 목록 조립
             filename = os.path.basename(meta.get('source', 'Unknown'))
             sources.append(f"- 📄 **{filename}** (p.{page})")
 
@@ -164,20 +174,25 @@ class RAGEngine:
         messages.append({"role": "user", "content": f"[참고 문서]\n{context_text}\n\n질문: {query}"})
 
         # 3. Generation Setup
-        input_ids = self.tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True, return_tensors="pt"
+        # [수정] attention_mask 생성 및 반환
+        inputs = self.tokenizer.apply_chat_template(
+            messages, 
+            add_generation_prompt=True, 
+            return_tensors="pt",
+            return_dict=True  # 딕셔너리 형태로 반환 (input_ids, attention_mask 포함)
         ).to(self.device)
 
         streamer = TextIteratorStreamer(self.tokenizer, skip_prompt=True, skip_special_tokens=True)
         
         gen_kwargs = dict(
-            input_ids=input_ids,
+            **inputs, # input_ids와 attention_mask가 같이 전달됨
             streamer=streamer,
             max_new_tokens=MAX_NEW_TOKENS,
             temperature=TEMPERATURE,
             repetition_penalty=1.15,
             do_sample=True,
-            eos_token_id=self.terminators
+            eos_token_id=self.terminators,
+            pad_token_id=self.tokenizer.eos_token_id # 명시적 설정
         )
 
         thread = Thread(target=self.model.generate, kwargs=gen_kwargs)
@@ -192,8 +207,62 @@ class RAGEngine:
 
         # 5. Sources
         if sources:
-            source_footer = "\n\n**[참고 문서]**\n" + "\n".join(sorted(list(set(sources)))) # 중복 제거 및 정렬
+            source_footer = "\n\n**[참고 문서]**\n" + "\n".join(sorted(list(set(sources))))
             yield source_footer
             full_response += source_footer
         
         self.chat_history.append((query, full_response))
+
+    def generate_answer(self, query: str, filters: Optional[Dict] = None) -> str:
+        """
+        [Evaluation 전용] 스트리밍 없이 한 번에 답변 생성
+        """
+        # 1. Retrieve
+        docs = self.search(query, filters, k=3)
+        
+        context_parts = []
+        for doc in docs:
+            meta = doc.metadata
+            src = f"{meta.get('company', 'Unknown')} {meta.get('year', '')}"
+            page = meta.get('page', '?')
+            context_parts.append(f"[{src} p.{page}]\n{doc.page_content.strip()}")
+
+        context_text = "\n\n".join(context_parts)
+
+        # 2. Prompt Setup
+        system_prompt = (
+            "당신은 기업 보고서 분석 AI입니다. [참고 문서]를 기반으로 질문에 답변하세요. "
+            "없는 내용을 지어내지 말고, 수치와 사실 위주로 설명하세요."
+        )
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"[참고 문서]\n{context_text}\n\n질문: {query}"}
+        ]
+
+        # [수정] attention_mask 자동 생성을 위해 return_dict=True 사용
+        inputs = self.tokenizer.apply_chat_template(
+            messages, 
+            add_generation_prompt=True, 
+            return_tensors="pt",
+            return_dict=True
+        ).to(self.device)
+
+        # 3. Generate (No Thread, No Streamer, No Grad)
+        with torch.no_grad():
+            outputs = self.model.generate(
+                **inputs, # input_ids, attention_mask 전달
+                max_new_tokens=MAX_NEW_TOKENS,
+                temperature=TEMPERATURE,
+                do_sample=True,
+                repetition_penalty=1.15,
+                eos_token_id=self.terminators,
+                pad_token_id=self.tokenizer.eos_token_id
+            )
+
+        # 4. Decode
+        # 입력 길이만큼 자르고 생성된 부분만 디코딩
+        generated_tokens = outputs[0][inputs['input_ids'].shape[-1]:]
+        response = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        
+        return response

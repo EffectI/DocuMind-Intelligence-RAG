@@ -7,12 +7,13 @@ from tqdm import tqdm
 from datasets import Dataset
 from dotenv import load_dotenv
 
-# Ragas & LangChain (Gemini)
-from ragas import evaluate
-from ragas.metrics.collections import Faithfulness, AnswerCorrectness, ContextRecall
+# [Ragas & Gemini]
+from ragas import evaluate, RunConfig
+# [수정] DeprecationWarning 해결: ragas.metrics.collections에서 임포트
+from ragas.metrics.collections import faithfulness, answer_correctness, context_recall
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 
-# 사용자 정의 모듈
+# [사용자 정의 모듈]
 from src.inference import RAGEngine
 from config import EVAL_DATASET_PATH, EVAL_RESULT_PATH
 
@@ -22,13 +23,13 @@ load_dotenv()
 def load_ground_truth(file_path):
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
-    # engine='python'과 on_bad_lines='skip'으로 로딩 안정성 확보
     return pd.read_csv(file_path, engine="python", on_bad_lines='skip')
 
 def generate_rag_responses(df, rag_engine):
     """
     RAG 엔진을 사용하여 답변을 생성합니다.
-    GPU 메모리 누수 방지를 위해 GC 및 캐시 정리를 수행합니다.
+    rag_engine.chat() 대신 generate_answer()를 사용하여 
+    쓰레드 생성 오버헤드와 메모리 누수를 방지합니다.
     """
     answers = []
     contexts = []
@@ -46,16 +47,19 @@ def generate_rag_responses(df, rag_engine):
                 torch.cuda.empty_cache()
 
             # 1. 문서 검색
+            # 검색 결과도 저장 (Context Recall 평가용)
             retrieved_docs = rag_engine.search(q, k=3)
             doc_contents = [doc.page_content for doc in retrieved_docs]
             
-            # 2. 답변 생성
-            full_response = ""
-            # chat 함수는 내부적으로 쓰레드를 사용하므로 제너레이터를 끝까지 소비해야 함
-            for chunk in rag_engine.chat(q):
-                full_response += chunk
-            
-            # 소스 표기 제거 (평가 정확도 향상용)
+            # 2. 답변 생성 (안정적인 generate_answer 사용)
+            if hasattr(rag_engine, 'generate_answer'):
+                full_response = rag_engine.generate_answer(q)
+            else:
+                full_response = ""
+                for chunk in rag_engine.chat(q):
+                    full_response += chunk
+
+            # 소스 표기 제거 (평가 시에는 순수 답변만 필요하므로)
             if "[참고 문서]" in full_response:
                 clean_answer = full_response.split("[참고 문서]")[0].strip()
             elif "**[참고 문서]**" in full_response:
@@ -67,23 +71,21 @@ def generate_rag_responses(df, rag_engine):
             contexts.append(doc_contents)
             
             # -------------------------------------------------
-            # [안전 장치 2] 과열 방지 휴식 (0.5초)
+            # [안전 장치 2] 과열 방지 휴식
             # -------------------------------------------------
-            time.sleep(0.5)
+            time.sleep(0.2)
 
         except Exception as e:
             print(f"\n[Error at index {i}] {e}")
             answers.append("Error occurred")
             contexts.append([])
             
-            # 에러 발생 시에도 메모리 정리
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
     return answers, contexts
 
 def run_evaluation():
-    # config에 정의된 경로 사용
     csv_path = EVAL_DATASET_PATH
     output_path = EVAL_RESULT_PATH
 
@@ -96,7 +98,7 @@ def run_evaluation():
         print(f"Error loading dataset: {e}")
         return
 
-    # 2. RAG 엔진 초기화 (피평가자: 학생)
+    # 2. RAG 엔진 초기화
     try:
         rag_engine = RAGEngine()
     except Exception as e:
@@ -116,47 +118,52 @@ def run_evaluation():
     dataset = Dataset.from_dict(data_dict)
 
     # =========================================================
-    # 5. 평가 설정 (심판: Gemini)
+    # 5. 평가 설정 (Gemini)
     # =========================================================
     print("Initializing Gemini for evaluation...")
     
     try:
-        # 채점관 LLM: Gemini 1.5 Pro
+        # [모델 변경] 속도 제한(Rate Limit) 회피를 위해 Flash 모델 사용
         judge_llm = ChatGoogleGenerativeAI(
-            model="gemini-1.5-pro",
-            temperature=0
+            model="gemini-1.5-flash", 
+            temperature=0,
+            max_retries=10
         )
 
-        # 임베딩 모델: Gemini Embedding
         judge_embeddings = GoogleGenerativeAIEmbeddings(
             model="models/text-embedding-004"
         )
 
-        print("Starting Ragas evaluation with Gemini 1.5 Pro...")
+        # [핵심] 실행 설정 (Rate Limit 방지)
+        run_config = RunConfig(
+            max_workers=1,
+            timeout=120
+        )
+
+        print("Starting Ragas evaluation (Sequential Mode with Flash)...")
         
         results = evaluate(
             dataset=dataset,
             metrics=[
-                Faithfulness(),
-                AnswerCorrectness(),
-                ContextRecall()
+                faithfulness,       
+                answer_correctness, 
+                context_recall      
             ],
             llm=judge_llm,
-            embeddings=judge_embeddings
+            embeddings=judge_embeddings,
+            run_config=run_config
         )
         
         print("\n=== Evaluation Results ===")
         print(results)
         
-        # 결과 저장 폴더가 없으면 생성 (안전장치)
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        
         results.to_pandas().to_csv(output_path, index=False)
         print(f"Saved evaluation results to: {output_path}")
 
     except Exception as e:
         print(f"Error during evaluation: {e}")
-        print("Please check your GOOGLE_API_KEY in .env file.")
+        print("Please check your GOOGLE_API_KEY in .env file or check Rate Limits.")
 
 if __name__ == "__main__":
     run_evaluation()
