@@ -6,11 +6,8 @@ import pandas as pd
 from tqdm import tqdm
 from datasets import Dataset
 from dotenv import load_dotenv
-
-# [Ragas & Gemini]
 from ragas import evaluate, RunConfig
-# [수정] DeprecationWarning 해결: ragas.metrics.collections에서 임포트
-from ragas.metrics.collections import faithfulness, answer_correctness, context_recall
+from ragas.metrics import Faithfulness, AnswerCorrectness, ContextRecall
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 
 # [사용자 정의 모듈]
@@ -123,9 +120,8 @@ def run_evaluation():
     print("Initializing Gemini for evaluation...")
     
     try:
-        # [모델 변경] 속도 제한(Rate Limit) 회피를 위해 Flash 모델 사용
         judge_llm = ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash", 
+            model="gemini-2.5-flash-lite", 
             temperature=0,
             max_retries=10
         )
@@ -134,20 +130,20 @@ def run_evaluation():
             model="models/text-embedding-004"
         )
 
-        # [핵심] 실행 설정 (Rate Limit 방지)
+        # 실행 설정 (Rate Limit 방지)
         run_config = RunConfig(
-            max_workers=1,
+            max_workers=1, # 1개씩 순차 처리 (멈춤 방지)
             timeout=120
         )
 
-        print("Starting Ragas evaluation (Sequential Mode with Flash)...")
+        print("Starting Ragas evaluation (Sequential Mode with Gemini 2.5 Flash)...")
         
         results = evaluate(
             dataset=dataset,
             metrics=[
-                faithfulness,       
-                answer_correctness, 
-                context_recall      
+                Faithfulness(),      
+                AnswerCorrectness(), 
+                ContextRecall()    
             ],
             llm=judge_llm,
             embeddings=judge_embeddings,

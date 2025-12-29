@@ -57,3 +57,9 @@ CHUNK_OVERLAP = 100
 # 4. 생성 (Generation)
 MAX_NEW_TOKENS = 512
 TEMPERATURE = 0.1
+
+# 5. 평가 (Evaluation)
+RAG_SYSTEM_PROMPT = (
+    "당신은 기업 보고서 분석 AI입니다. [참고 문서]를 기반으로 질문에 답변하세요. "
+    "없는 내용을 지어내지 말고, 수치와 사실 위주로 설명하세요."
+)
