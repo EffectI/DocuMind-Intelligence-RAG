@@ -1,6 +1,7 @@
 import os
 import sys
 import torch
+import pickle
 from threading import Thread
 from collections import deque
 from typing import Optional, Dict, List, Tuple
@@ -24,7 +25,8 @@ from config import (
     DEVICE, 
     MAX_NEW_TOKENS, 
     TEMPERATURE,
-    RAG_SYSTEM_PROMPT
+    RAG_SYSTEM_PROMPT,
+    BM25_INDEX_PATH
 )
 
 class RAGEngine:
@@ -34,6 +36,7 @@ class RAGEngine:
         
         self._setup_memory_limit()
         self._load_vector_db()
+        self._load_bm25()      # [New] BM25 인덱스 로드
         self._load_reranker() 
         self._load_llm()
         self.chat_history = deque(maxlen=3)
@@ -61,6 +64,20 @@ class RAGEngine:
             embedding_function=self.embeddings,
             collection_name="samsung_report_db"
         )
+
+    def _load_bm25(self):
+        """[New] BM25 인덱스 로드 (Hybrid Search용)"""
+        if os.path.exists(BM25_INDEX_PATH):
+            print(f"[Init] BM25 Retriever 로딩...")
+            try:
+                with open(BM25_INDEX_PATH, "rb") as f:
+                    self.bm25_retriever = pickle.load(f)
+            except Exception as e:
+                print(f"[Warning] BM25 로드 실패: {e}")
+                self.bm25_retriever = None
+        else:
+            print("[Warning] BM25 인덱스가 없습니다. Hybrid Search가 비활성화됩니다.")
+            self.bm25_retriever = None
 
     def _load_reranker(self):
         print(f"[Init] Reranker Loading ({RERANKER_MODEL_ID})...")
@@ -98,9 +115,17 @@ class RAGEngine:
         ]
 
     def search(self, query: str, filters: Optional[Dict] = None, k: int = 3):
-        """Two-Stage Retrieval: Vector Search -> Cross-Encoder Reranking"""
+        """
+        [Advanced] Hybrid Search (BM25 + Vector) -> Reranking
+        1. Vector Search로 의미적 유사 문서 검색
+        2. BM25로 키워드 일치 문서 검색
+        3. RRF 알고리즘으로 두 결과 앙상블(Ensemble)
+        4. Cross-Encoder로 최종 정밀 재순위화
+        """
+        # 1. 후보군 검색 (Reranking 효과를 위해 k의 3배수 추출)
         initial_k = k * 3 
         
+        # [A] Vector Search
         search_kwargs = {"k": initial_k}
         if filters:
             conditions = [{key: {"$eq": val}} for key, val in filters.items()]
@@ -109,22 +134,56 @@ class RAGEngine:
             elif len(conditions) == 1:
                 search_kwargs["filter"] = conditions[0]
 
-        docs = self.vector_store.similarity_search(query, **search_kwargs)
+        vector_docs = self.vector_store.similarity_search(query, **search_kwargs)
         
-        if not docs:
+        # [B] BM25 Search (키워드 매칭)
+        bm25_docs = []
+        if self.bm25_retriever:
+            self.bm25_retriever.k = initial_k
+            bm25_docs = self.bm25_retriever.invoke(query)
+            # (Note) BM25Retriever는 기본적으로 메타데이터 필터링을 지원하지 않으므로,
+            # 엄격한 필터링이 필요하다면 여기서 수동으로 필터링하는 로직을 추가할 수 있습니다.
+
+        # 2. [Ensemble] RRF(Reciprocal Rank Fusion)로 결과 통합
+        combined_docs = self._hybrid_fusion(vector_docs, bm25_docs, k=initial_k)
+
+        if not combined_docs:
             return []
 
-        # Reranking
-        pairs = [[query, doc.page_content] for doc in docs]
+        # 3. [Reranking] 정밀 채점 (기존 로직 동일)
+        pairs = [[query, doc.page_content] for doc in combined_docs]
         scores = self.reranker.predict(pairs)
 
         scored_docs = []
-        for doc, score in zip(docs, scores):
+        for doc, score in zip(combined_docs, scores):
             doc.metadata["rerank_score"] = float(score)
             scored_docs.append(doc)
 
         scored_docs.sort(key=lambda x: x.metadata["rerank_score"], reverse=True)
         return scored_docs[:k]
+
+    def _hybrid_fusion(self, vector_docs, bm25_docs, k=10, rrf_k=60):
+        """[New] RRF 알고리즘으로 문서 순위 병합"""
+        scores = {}
+        
+        # Vector 검색 결과 점수화
+        for rank, doc in enumerate(vector_docs):
+            # 문서 식별을 위해 내용(page_content)을 키로 사용 (중복 제거)
+            doc_id = doc.page_content
+            if doc_id not in scores:
+                scores[doc_id] = {"doc": doc, "score": 0}
+            scores[doc_id]["score"] += 1 / (rank + rrf_k)
+
+        # BM25 검색 결과 점수화
+        for rank, doc in enumerate(bm25_docs):
+            doc_id = doc.page_content
+            if doc_id not in scores:
+                scores[doc_id] = {"doc": doc, "score": 0}
+            scores[doc_id]["score"] += 1 / (rank + rrf_k)
+
+        # 점수순 정렬
+        sorted_docs = sorted(scores.values(), key=lambda x: x['score'], reverse=True)
+        return [item['doc'] for item in sorted_docs[:k]]
 
     # [Refactor] Helper: Format context and extract sources
     def _format_context(self, docs) -> Tuple[str, List[str]]:

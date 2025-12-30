@@ -1,10 +1,11 @@
 import os
 import re
 import hashlib
+import pickle
 from typing import List, Dict, Any
 
-# [Refactor] 불필요한 sys, shutil 제거
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
+from langchain_community.retrievers import BM25Retriever
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
@@ -16,7 +17,8 @@ from config import (
     EMBEDDING_MODEL_ID, 
     DEVICE,
     CHUNK_SIZE, 
-    CHUNK_OVERLAP
+    CHUNK_OVERLAP,
+    BM25_INDEX_PATH
 )
 
 class VectorStoreBuilder:
@@ -38,7 +40,7 @@ class VectorStoreBuilder:
             
         print(f"[Loader] 문서 로딩 시작: {PROCESSED_DATA_DIR}")
         
-        # [Optimization] glob 패턴을 명확히 하고, 에러 발생 시 무시(silent_errors) 옵션 고려 가능
+        # [Optimization] glob 패턴을 명확히 하고, 에러 발생 시 처리
         loader = DirectoryLoader(PROCESSED_DATA_DIR, glob="**/*.md", loader_cls=TextLoader)
         try:
             documents = loader.load()
@@ -118,14 +120,17 @@ class VectorStoreBuilder:
         return f"{source_hash}_{content_hash}"
 
     def build_database(self, chunks: List[Document]):
-        """ChromaDB에 청크 저장 (증분 업데이트 적용)"""
+        """ChromaDB 저장(증분) 및 BM25 인덱스 생성(전체)"""
         if not chunks:
             print("[Info] 저장할 청크가 없습니다.")
             return
 
+        # ---------------------------------------------------------
+        # 1. ChromaDB 저장 (증분 업데이트)
+        # ---------------------------------------------------------
         print(f"[DB] 데이터베이스 연결: {DB_PATH}")
         
-        # [Refactor] Chroma 초기화 로직 단순화 (persist_directory가 있으면 자동 로드)
+        # [Refactor] Chroma 초기화 로직 단순화
         self.vector_store = Chroma(
             persist_directory=DB_PATH,
             embedding_function=self.embedding_model,
@@ -146,13 +151,34 @@ class VectorStoreBuilder:
             if chunk_id not in existing_ids:
                 new_chunks.append(chunk)
                 new_ids.append(chunk_id)
-                # 중복된 내용이 입력 데이터 내에 있을 경우를 대비해 집합에 추가
                 existing_ids.add(chunk_id)
 
         if new_chunks:
             print(f"[Update] 신규 청크 {len(new_chunks)}개 저장 중...")
-            # ids 파라미터를 명시적으로 전달하여 중복 방지 강화
             self.vector_store.add_documents(documents=new_chunks, ids=new_ids)
-            print(" -> 저장 완료")
+            print(" -> ChromaDB 저장 완료")
         else:
-            print(" -> 모든 데이터가 이미 최신 상태입니다. (업데이트 없음)")
+            print(" -> ChromaDB는 이미 최신 상태입니다. (업데이트 없음)")
+
+        # ---------------------------------------------------------
+        # 2. BM25 인덱스 생성 및 저장 (Hybrid Search용)
+        # ---------------------------------------------------------
+        # BM25는 전체 문서 통계(IDF)가 중요하므로, 로드된 전체 chunks로 새로 갱신합니다.
+        print("[BM25] 키워드 검색 인덱스 생성 중...")
+        try:
+            # BM25Retriever 생성
+            bm25_retriever = BM25Retriever.from_documents(chunks)
+            bm25_retriever.k = 3  # 기본 검색 개수 설정
+            
+            # 저장 경로 디렉토리 확보
+            bm25_dir = os.path.dirname(BM25_INDEX_PATH)
+            if not os.path.exists(bm25_dir):
+                os.makedirs(bm25_dir, exist_ok=True)
+
+            # pickle로 저장
+            with open(BM25_INDEX_PATH, "wb") as f:
+                pickle.dump(bm25_retriever, f)
+            print(f" -> BM25 인덱스 저장 완료 ({BM25_INDEX_PATH})")
+            
+        except Exception as e:
+            print(f"[Error] BM25 인덱스 생성 실패: {e}")

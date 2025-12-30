@@ -16,8 +16,10 @@ DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 RAW_DATA_DIR = os.path.join(DATA_DIR, "raw", "dart")
 PROCESSED_DATA_DIR = os.path.join(DATA_DIR, "processed", "sections")
 DB_PATH = os.path.join(DATA_DIR, "vector_db")
+BM25_INDEX_PATH = os.path.join(DATA_DIR, "vector_db", "bm25_retriever.pkl")
 
-# [New] 평가 관련 경로 추가
+
+# 평가 관련 경로 추가
 EVAL_DIR = os.path.join(DATA_DIR, "evaluation")
 EVAL_DATASET_PATH = os.path.join(EVAL_DIR, "eval_dataset.csv")
 EVAL_RESULT_PATH = os.path.join(EVAL_DIR, "evaluation_result.csv")
