@@ -36,7 +36,7 @@ class RAGEngine:
         
         self._setup_memory_limit()
         self._load_vector_db()
-        self._load_bm25()      # [New] BM25 인덱스 로드
+        self._load_bm25()  
         self._load_reranker() 
         self._load_llm()
         self.chat_history = deque(maxlen=3)

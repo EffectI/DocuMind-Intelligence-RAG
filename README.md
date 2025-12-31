@@ -49,7 +49,7 @@
 
 ### Phase 2: Accuracy & Retrieval (Current Focus) 🚧
 - [x] **Reranking:** Cross-Encoder 기반 검색 결과 재순위화(Re-ranking) 적용 완료
-- [x] **Advanced Search:** Hybrid Search (BM25 + Vector) 도입 예정
+- [x] **Advanced Search:** Hybrid Search (BM25 + Vector) 도입 완료
 - [x] **Golden Dataset:** 자동 생성 스크립트(`generate_dataset.py`) 구축 완료
 - [x] **Evaluation Pipeline:** Ragas + Gemini 기반 정량 평가 시스템 구축 완료 (정확도 최적화 진행 중)
 
